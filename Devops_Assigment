@@ -1,0 +1,313 @@
+Devops Engineer Assignment:
+
+Task 1: Automated Infrastruture Setup on AWS VPC :
+
+Ans: I have used AWS and Terraform to provision the resources . The main.tf  configuration files consist of following code :
+
+provider "aws" {
+  region = "us-east-1"
+}
+
+# VPC
+resource "aws_vpc" "main_vpc" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags = {
+    Name = "main_vpc"
+  }
+}
+
+# Public Subnet
+resource "aws_subnet" "public_subnet" {
+  vpc_id     = aws_vpc.main_vpc.id
+  cidr_block = "10.0.1.0/24"
+  map_public_ip_on_launch = true
+  tags = {
+    Name = "public_subnet"
+  }
+}
+
+# Private Subnet
+resource "aws_subnet" "private_subnet" {
+  vpc_id     = aws_vpc.main_vpc.id
+  cidr_block = "10.0.2.0/24"
+  tags = {
+    Name = "private_subnet"
+  }
+}
+
+# Internet Gateway
+resource "aws_internet_gateway" "main_igw" {
+  vpc_id = aws_vpc.main_vpc.id
+  tags = {
+    Name = "main_igw"
+  }
+}
+
+# Route Table for Public Subnet
+resource "aws_route_table" "public_rt" {
+  vpc_id = aws_vpc.main_vpc.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main_igw.id
+  }
+  tags = {
+    Name = "public_rt"
+  }
+}
+
+# Route Table Association for Public Subnet
+resource "aws_route_table_association" "public_rta" {
+  subnet_id      = aws_subnet.public_subnet.id
+  route_table_id = aws_route_table.public_rt.id
+}
+
+# Security Group
+resource "aws_security_group" "main_sg" {
+  vpc_id = aws_vpc.main_vpc.id
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "main_sg"
+  }
+}
+
+# EC2 Instance in Public Subnet
+resource "aws_instance" "nginx_instance" {
+  ami           = "ami-0c55b159cbfafe1f0" # Amazon Linux 2 AMI ID
+  instance_type = "t2.micro"
+  subnet_id     = aws_subnet.public_subnet.id
+  security_groups = [aws_security_group.main_sg.name]
+
+  user_data = <<-EOF
+              #!/bin/bash
+              yum update -y
+              amazon-linux-extras install nginx1 -y
+              systemctl start nginx
+              systemctl enable nginx
+              echo "Welcome to my website" > /usr/share/nginx/html/index.html
+              EOF
+
+  tags = {
+    Name = "nginx_instance"
+  }
+}
+
+# Output the Public IP of the instance
+output "instance_public_ip" {
+  value = aws_instance.nginx_instance.public_ip
+}
+
+We need to configure AWS CLI , aws configure
+Need to run the commads:
+
+Terraform init 
+Terraoform fmt
+Terraform validate
+Terraform plan
+Terraform apply
+Terraform show
+
+
+
+
+
+
+Task2 : Jenkins automation to perform Build and Deploy application
+
+Ans: We need to setup Jenkins server, Plugin configuration, User authentications then need to run the following Declarative pipeline:
+
+I have taken java spring boot application forked it build, unit tested, created docker image, Deployed to Ec2 instance:
+
+Jenkinsfile:
+
+pipeline {
+    agent any
+
+    environment {
+        GIT_REPO_URL = 'https://github.com/spring-projects/spring-petclinic.git'
+        FORKED_REPO_URL = 'https://github.com/YOUR_USERNAME/spring-petclinic.git'
+        DOCKER_IMAGE = 'spring-petclinic:latest'
+        EC2_IP = 'your.ec2.instance.ip'
+        SSH_KEY = '/path/to/your/private/key.pem'
+        SSH_USER = 'ec2-user'
+    }
+
+    stages {
+        stage('Fork Repository') {
+            steps {
+                script {
+                    echo 'Forking the repository...'
+                    // Assuming the repository is already forked manually
+                }
+            }
+        }
+
+        stage('Checkout Code') {
+            steps {
+                git url: "${FORKED_REPO_URL}", branch: 'main'
+            }
+        }
+
+        stage('Build with Maven') {
+            steps {
+                script {
+                    echo 'Building the application...'
+                    sh 'mvn clean install'
+                }
+            }
+        }
+
+        stage('Run Unit Tests') {
+            steps {
+                script {
+                    echo 'Running unit tests...'
+                    sh 'mvn test'
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    echo 'Building Docker image...'
+                    sh 'docker build -t ${DOCKER_IMAGE} .'
+                }
+            }
+        }
+
+        stage('Deploy to EC2') {
+            steps {
+                script {
+                    echo 'Deploying to EC2...'
+                    sh """
+                        scp -i ${SSH_KEY} Dockerfile ${SSH_USER}@${EC2_IP}:/home/${SSH_USER}/
+                        ssh -i ${SSH_KEY} ${SSH_USER}@${EC2_IP} 'docker stop spring-petclinic || true && docker rm spring-petclinic || true'
+                        ssh -i ${SSH_KEY} ${SSH_USER}@${EC2_IP} 'docker run -d -p 8080:8080 --name spring-petclinic ${DOCKER_IMAGE}'
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Cleaning up workspace...'
+            cleanWs()
+        }
+        success {
+            echo 'Deployment successful!'
+        }
+        failure {
+            echo 'Deployment failed!'
+        }
+    }
+}
+
+
+Task3: How to Monitor CPU and Disk usage on ec2 instacne from Cloudwatch and need to send an notification if cpu reaches 80%:
+
+Ans: Instead of GCP we are using AWS ec2 instance and cloudwatch with SNS
+
+1. Install the CloudWatch Agent on the EC2 Instance
+First, you'll need to install the CloudWatch agent on your EC2 instance to collect more detailed metrics like disk usage.
+Connect to Your EC2 Instance:
+bash
+ssh -i /path/to/your/private/key.pem ec2-user@your-ec2-instance-ip
+Install the CloudWatch Agent:
+bash
+
+sudo yum install -y amazon-cloudwatch-agent
+Create the CloudWatch Agent Configuration:
+Create a configuration file (e.g., amazon-cloudwatch-agent.json) on your EC2 instance:
+json
+
+{
+    "agent": {
+        "metrics_collection_interval": 60,
+        "run_as_user": "root"
+    },
+    "metrics": {
+        "append_dimensions": {
+            "InstanceId": "${aws:InstanceId}"
+        },
+        "metrics_collected": {
+            "cpu": {
+                "measurement": [
+                    "cpu_usage_idle",
+                    "cpu_usage_user",
+                    "cpu_usage_system"
+                ],
+                "metrics_collection_interval": 60,
+                "totalcpu": true
+            },
+            "disk": {
+                "measurement": [
+                    "used_percent"
+                ],
+                "metrics_collection_interval": 60,
+                "resources": [
+                    "/"
+                ]
+            }
+        }
+    }
+}
+This configuration will collect CPU and disk usage metrics every 60 seconds.
+Start the CloudWatch Agent:
+sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a start -m ec2 -c file:/path/to/amazon-cloudwatch-agent.json
+2. Create a CloudWatch Alarm for CPU Usage
+Now, you'll create a CloudWatch alarm that triggers if the CPU usage exceeds 80%.
+Using AWS CLI:
+aws cloudwatch put-metric-alarm --alarm-name "HighCPUUsageAlarm" \
+    --metric-name "CPUUtilization" --namespace "AWS/EC2" \
+    --statistic "Average" --period 300 --threshold 80 \
+    --comparison-operator "GreaterThanOrEqualToThreshold" \
+    --dimensions "Name=InstanceId,Value=your-ec2-instance-id" \
+    --evaluation-periods 2 --alarm-actions arn:aws:sns:your-region:your-account-id:your-sns-topic \
+    --unit "Percent"
+Replace the following:
+your-ec2-instance-id: The ID of your EC2 instance.
+your-region: Your AWS region.
+your-account-id: Your AWS account ID.
+your-sns-topic: The ARN of your SNS topic.
+3. Create an SNS Topic and Subscribe to Notifications
+To receive notifications when the alarm triggers, create an SNS topic and subscribe to it.
+Create SNS Topic:
+aws sns create-topic --name HighCPUUsageTopic
+Subscribe to SNS Topic:
+aws sns subscribe --topic-arn arn:aws:sns:your-region:your-account-id:HighCPUUsageTopic \
+    --protocol email --notification-endpoint your-email@example.com
+Replace your-email@example.com with your email address. You’ll receive an email to confirm your subscription.
+4. Test the Setup
+You can test the alarm by stressing the CPU on your EC2 instance:
+sudo yum install -y stress
+stress --cpu 8 --timeout 300
+
